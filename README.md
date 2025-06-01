@@ -7,12 +7,11 @@ An intelligent chatbot for Carro, a online used car dealership, that provides in
 - PDF FAQ document processing
 - Semantic search using sentence embeddings
 - Integration with Google's Gemini AI
-- User-friendly Streamlit interface
 - Real-time question answering
 
 ## Bonus Features
 - Support Multilanguages
-- Chatbot UI
+- User-friendly Streamlit Chatbot UI interface
 - Websrapping for Static sites
 - UI Dashboard for monitoring LLM input, output, Scores, Model costs
 
@@ -60,6 +59,25 @@ streamlit run main.py
 - `faq_index.py`: Vector embeddings and similarity search
 - `requirements.txt`: Project dependencies
 - `.streamlit/secrets.toml`: Configuration and API keys
+
+
+## Testing & Evaluation
+
+1. Clone Langfuse Repository
+```bash
+git clone https://github.com/langfuse/langfuse.git
+cd langfuse
+```
+
+2. Start the application
+
+```bash
+docker compose up
+```
+
+3. Done! Open http://localhost:3000 in your browser to access the Langfuse UI.
+
+4. Generate the Secret key & Public key to pass in test_carro_chatbot_langfuse.py.
 
 ## Requirements
 
