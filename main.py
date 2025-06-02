@@ -1,4 +1,5 @@
 import streamlit as st
+import asyncio
 from datetime import datetime
 from dataclasses import dataclass
 from google import genai
@@ -9,6 +10,8 @@ import os
 import numpy as np
 from typing import Literal, Optional
 import json
+import inspect
+import traceback
 
 try:
     from gemini_function_schema import search_and_scrape_carro_from_api, extract_function_calls, carro_insight_tool
@@ -33,15 +36,24 @@ class ChatResponse:
     search_used: bool = False
     function_calls_made: Optional[list] = None
 
-def init_faq_system(pdf_path: str, chunk_size: int = 500):
-    """Load and process FAQ document, return index + chunks + model"""
+async def init_faq_system_async(pdf_path: str, chunk_size: int = 500):
+    """Load and process FAQ document asynchronously, return index + chunks + model"""
     try:
         st.info("Loading FAQ data...")
-        faq_text = extract_faq_text(pdf_path)
+        
+        # Run CPU-bound operations in thread pool
+        loop = asyncio.get_event_loop()
+        faq_text = await loop.run_in_executor(None, extract_faq_text, pdf_path)
+        
         chunks = [faq_text[i:i + chunk_size] for i in range(0, len(faq_text), chunk_size)]
-        index, embeddings, chunk_texts, openai_client = build_faq_index(chunks)
+        
+        # Build FAQ index asynchronously
+        index, embeddings, chunk_texts, gemini_client = await loop.run_in_executor(
+            None, build_faq_index, chunks
+        )
+        
         st.success("FAQ data loaded successfully!")
-        return index, chunk_texts, openai_client
+        return index, chunk_texts, gemini_client
     except Exception as e:
         st.error(f"Failed to load FAQ data: {str(e)}")
         return None, None, None
@@ -65,8 +77,37 @@ def create_valid_function_tool():
     
     return types.Tool(function_declarations=[function_declaration])
 
-def handle_function_calls(response):
-    """Handle function calls from Gemini response with robust error handling"""
+async def execute_search_function_async(query: str):
+    """Execute search function asynchronously"""
+    try:
+        if not EXTERNAL_API_AVAILABLE:
+            return "External search functionality is not available", True
+        
+        if asyncio.iscoroutinefunction(search_and_scrape_carro_from_api):
+            search_result = await search_and_scrape_carro_from_api(query)
+        else:
+            loop = asyncio.get_event_loop()
+            sig = inspect.signature(search_and_scrape_carro_from_api)
+            param_count = len(sig.parameters)
+            
+            if param_count == 1:
+                search_result = await loop.run_in_executor(
+                    None, search_and_scrape_carro_from_api, query
+                )
+            else:
+                search_result = await loop.run_in_executor(
+                    None, search_and_scrape_carro_from_api, query, "general"
+                )
+        
+        print(f"DEBUG: External API result: {search_result}")
+        return search_result, False
+        
+    except Exception as api_error:
+        print(f"DEBUG: External API error: {api_error}")
+        return f"Search error: {str(api_error)}", True
+
+async def handle_function_calls_async(response):
+    """Handle function calls from Gemini response asynchronously with robust error handling"""
     function_results = []
     
     try:
@@ -74,81 +115,90 @@ def handle_function_calls(response):
             candidate = response.candidates[0]
             
             if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts'):
+                function_calls_to_execute = []
+                
                 for i, part in enumerate(candidate.content.parts):
                     if hasattr(part, 'function_call') and part.function_call is not None:
                         function_call = part.function_call
-                        
-                        # Safely get function name
                         function_name = getattr(function_call, 'name', None)
-                        print(f"DEBUG: Processing function call: {function_name}")
                         
                         if function_name == "search_carro_info":
-                            try:
-                                args = {}
-                                if hasattr(function_call, 'args') and function_call.args:
-                                    args = dict(function_call.args)
-                                
-                                query = args.get("query", "")
-                                print(f"DEBUG: Calling search with query='{query}'")
-                                
-                                search_result = None
-                                error_occurred = False
-                                
-                                if EXTERNAL_API_AVAILABLE:
-                                    try:
-                                        import inspect
-                                        sig = inspect.signature(search_and_scrape_carro_from_api)
-                                        param_count = len(sig.parameters)
-                                        
-                                        if param_count == 1:
-                                            # Function only takes query
-                                            search_result = search_and_scrape_carro_from_api(query)
-                                        else:
-                                            # Function takes both query and search_type (fallback)
-                                            search_result = search_and_scrape_carro_from_api(query, "general")
-                                        
-                                        print(f"DEBUG: External API result: {search_result}")
-                                        
-                                    except Exception as api_error:
-                                        print(f"DEBUG: External API error: {api_error}")
-                                        search_result = f"Search error: {str(api_error)}"
-                                        error_occurred = True
-                                else:
-                                    search_result = "External search functionality is not available"
-                                    error_occurred = True
-                                
-                                function_results.append({
-                                    "name": function_name,
-                                    "result": search_result,
-                                    "query": query,
-                                    "error": error_occurred
-                                })
-                                
-                                print(f"DEBUG: Added function result to list. Total results: {len(function_results)}")
-                                
-                            except Exception as e:
-                                print(f"DEBUG: Error in function execution: {str(e)}")
-                                function_results.append({
-                                    "name": function_name or "unknown_function",
-                                    "result": f"Search function error: {str(e)}",
-                                    "query": args.get("query", ""),
-                                    "error": True
-                                })
-                        else:
-                            print(f"DEBUG: Unknown function name: {function_name}")
+                            args = {}
+                            if hasattr(function_call, 'args') and function_call.args:
+                                args = dict(function_call.args)
+                            
+                            query = args.get("query", "")
+                            function_calls_to_execute.append((function_name, query))
+                
+                if function_calls_to_execute:
+                    tasks = []
+                    for function_name, query in function_calls_to_execute:
+                        print(f"DEBUG: Preparing async call for query='{query}'")
+                        task = execute_search_function_async(query)
+                        tasks.append((function_name, query, task))
+                    
+                    for function_name, query, task in tasks:
+                        try:
+                            search_result, error_occurred = await task
+                            
+                            function_results.append({
+                                "name": function_name,
+                                "result": search_result,
+                                "query": query,
+                                "error": error_occurred
+                            })
+                            
+                            print(f"DEBUG: Added async function result. Total results: {len(function_results)}")
+                            
+                        except Exception as e:
+                            print(f"DEBUG: Error in async function execution: {str(e)}")
+                            function_results.append({
+                                "name": function_name,
+                                "result": f"Search function error: {str(e)}",
+                                "query": query,
+                                "error": True
+                            })
             
     except Exception as e:
-        print(f"DEBUG: Error in handle_function_calls: {str(e)}")
-        import traceback
+        print(f"DEBUG: Error in handle_function_calls_async: {str(e)}")
         traceback.print_exc()
     
-    print(f"DEBUG: Returning {len(function_results)} function results")
+    print(f"DEBUG: Returning {len(function_results)} async function results")
     return function_results
 
-def get_answer_from_faq(query: str, index, openai_client, chunk_texts, k: int = 3):
-    """Retrieve relevant chunks and generate a response using LLM with function calling"""
+async def generate_content_async(model: str, contents: str, config=None):
+    """Generate content asynchronously"""
+    loop = asyncio.get_event_loop()
     
-    results = query_faq_index(query, index, openai_client, chunk_texts, k=k)
+    if config:
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config
+            )
+        )
+    else:
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.models.generate_content(
+                model=model,
+                contents=contents
+            )
+        )
+    
+    return response
+
+async def get_answer_from_faq_async(query: str, index, gemini_client, chunk_texts, k: int = 3):
+    """Retrieve relevant chunks and generate a response using LLM with async function calling"""
+    
+    # Run FAQ query in thread pool
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(
+        None, query_faq_index, query, index, gemini_client, chunk_texts, k
+    )
+    
     chunks = [chunk for chunk, _ in results]
     similarities = [score for _, score in results]
     context = "\n\n".join(chunks)
@@ -180,21 +230,20 @@ def get_answer_from_faq(query: str, index, openai_client, chunk_texts, k: int = 
             max_output_tokens=1024
         )
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-04-17",
-            contents=prompt,
-            config=config
+        response = await generate_content_async(
+            "gemini-2.5-flash-preview-04-17",
+            prompt,
+            config
         )
         
-        print(f"DEBUG: Function calling response received")
+        print(f"DEBUG: Async function calling response received")
         
-        function_results = handle_function_calls(response)
-        print(f"DEBUG: Function results processed: {len(function_results)} calls made")
+        function_results = await handle_function_calls_async(response)
+        print(f"DEBUG: Async function results processed: {len(function_results)} calls made")
         
         if function_results and len(function_results) > 0:
-            print("DEBUG: Processing function call results...")
+            print("DEBUG: Processing async function call results...")
             
-            # Create follow-up prompt with function results
             function_context = "\n".join([
                 f"Search for '{result['query']}' returned: {result['result']}" 
                 for result in function_results
@@ -212,10 +261,10 @@ def get_answer_from_faq(query: str, index, openai_client, chunk_texts, k: int = 
 
             Please synthesize the information from both the FAQ and search results to provide a helpful, accurate response. If the search results contain relevant information, prioritize that for current/dynamic information like opening hours, contact details, or current listings."""
 
-            print("DEBUG: Generating final response with search results...")
-            final_response = client.models.generate_content(
-                model="gemini-2.5-flash-preview-04-17",
-                contents=follow_up_prompt
+            print("DEBUG: Generating final async response with search results...")
+            final_response = await generate_content_async(
+                "gemini-2.5-flash-preview-04-17",
+                follow_up_prompt
             )
             
             return ChatResponse(
@@ -241,14 +290,13 @@ def get_answer_from_faq(query: str, index, openai_client, chunk_texts, k: int = 
             
     except Exception as e:
         print(f"DEBUG: Exception occurred: {str(e)}")
-        import traceback
         traceback.print_exc()
         
         try:
-            print("DEBUG: Attempting fallback response...")
-            fallback_response = client.models.generate_content(
-                model="gemini-2.5-flash-preview-04-17",
-                contents=f"Based on this FAQ content, please answer the question: {context}\n\nQuestion: {query}"
+            print("DEBUG: Attempting async fallback response...")
+            fallback_response = await generate_content_async(
+                "gemini-2.5-flash-preview-04-17",
+                f"Based on this FAQ content, please answer the question: {context}\n\nQuestion: {query}"
             )
             
             return ChatResponse(
@@ -260,7 +308,7 @@ def get_answer_from_faq(query: str, index, openai_client, chunk_texts, k: int = 
             )
             
         except Exception as fallback_error:
-            print(f"DEBUG: Fallback also failed: {str(fallback_error)}")
+            print(f"DEBUG: Async fallback also failed: {str(fallback_error)}")
             
             return ChatResponse(
                 message=f"I apologize, but I'm having technical difficulties. The error was: {str(e)}",
@@ -270,8 +318,24 @@ def get_answer_from_faq(query: str, index, openai_client, chunk_texts, k: int = 
                 function_calls_made=None
             )
 
-def render_ui(index, chunk_texts, openai_client):
-    """Enhanced Streamlit UI"""
+def run_async(coro):
+    """Helper function to run async functions in Streamlit"""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is already running, create a new task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result(timeout=30)  # 30 second timeout
+        else:
+            return loop.run_until_complete(coro)
+    except RuntimeError:
+        # No event loop exists, create a new one
+        return asyncio.run(coro)
+
+async def render_ui_async(index, chunk_texts, gemini_client):
+    """Enhanced Streamlit UI with async support"""
     st.title("🚗 Carro Malaysia Chatbot")
     st.markdown("*Ask me anything about used cars, pricing, policies, or current market information!*")
     
@@ -291,7 +355,9 @@ def render_ui(index, chunk_texts, openai_client):
                         st.write("**Function Calls Made:**")
                         for call in metadata['function_calls_made']:
                             st.write(f"- {call['name']}: {call['query']}")
-                            st.write(f"  Result: {str(call['result'])[:200]}..." if len(str(call['result'])) > 200 else f"  Result: {call['result']}")
+                            result_text = str(call['result'])
+                            display_result = f"{result_text[:200]}..." if len(result_text) > 200 else result_text
+                            st.write(f"  Result: {display_result}")
     
     if prompt := st.chat_input("Hi! What would you like to know about Carro?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -301,7 +367,7 @@ def render_ui(index, chunk_texts, openai_client):
         
         with st.chat_message("assistant", avatar="carro_logo.png"):
             with st.spinner("Thinking..."):
-                response = get_answer_from_faq(prompt, index, openai_client, chunk_texts)
+                response = await get_answer_from_faq_async(prompt, index, gemini_client, chunk_texts)
             
             st.markdown(response.message)
             
@@ -316,7 +382,9 @@ def render_ui(index, chunk_texts, openai_client):
                     for call in response.function_calls_made:
                         st.write(f"- Function: {call['name']}")
                         st.write(f"  Query: {call['query']}")
-                        st.write(f"  Result: {call['result'][:200]}..." if len(str(call['result'])) > 200 else f"  Result: {call['result']}")
+                        result_text = str(call['result'])
+                        display_result = f"{result_text[:200]}..." if len(result_text) > 200 else result_text
+                        st.write(f"  Result: {display_result}")
         
         st.session_state.messages.append({
             "role": "assistant", 
@@ -330,20 +398,19 @@ def render_ui(index, chunk_texts, openai_client):
         })
 
 def main():
-    """Main application function"""
+    """Main application function with async support"""
     st.set_page_config(
         page_title="Carro Chatbot",
         page_icon="🚗",
         layout="wide"
     )
+    
     with st.sidebar:
         st.header("About Carro Chatbot")
         st.write("This chatbot can help you with:")
         st.write("• FAQ about Carro policies")
         st.write("• Current car listings and prices")
         st.write("• Opening hours and contact information")
-        st.write("• General car buying advice")
-        st.write("• Market information")
         
         if st.button("Clear Chat History"):
             st.session_state.messages = []
@@ -356,12 +423,25 @@ def main():
         st.write("Please ensure the FAQ PDF file exists at the specified path.")
         return
     
-    index, chunk_texts, openai_client = init_faq_system(pdf_path)
+    if "faq_initialized" not in st.session_state:
+        with st.spinner("Initializing FAQ system..."):
+            index, chunk_texts, gemini_client = run_async(init_faq_system_async(pdf_path))
+            
+            if index is not None and chunk_texts is not None and gemini_client is not None:
+                st.session_state.faq_initialized = True
+                st.session_state.index = index
+                st.session_state.chunk_texts = chunk_texts
+                st.session_state.gemini_client = gemini_client
+            else:
+                st.error("Failed to initialize the FAQ system. Please check your configuration.")
+                return
     
-    if index is not None and chunk_texts is not None and openai_client is not None:
-        render_ui(index, chunk_texts, openai_client)
-    else:
-        st.error("Failed to initialize the FAQ system. Please check your configuration.")
+    if st.session_state.get("faq_initialized", False):
+        run_async(render_ui_async(
+            st.session_state.index,
+            st.session_state.chunk_texts,
+            st.session_state.gemini_client
+        ))
 
 if __name__ == "__main__":
     main()
