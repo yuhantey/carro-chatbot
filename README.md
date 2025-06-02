@@ -2,8 +2,18 @@
 
 An intelligent chatbot for Carro, a online used car dealership, that provides instant answers to customer queries based on FAQ documents on the website. The chatbot respond to questions about used cars, pricing, financing, and other relevant information using the provided FAQ document and internet search APIs for up-to-date data.
 
-## Features
 
+## FAQ Related Question
+![FAQ Question](utils/images/faq_question.png)
+
+## Real-Time Pricing Question
+![Real-Time Pricing Question](utils/images/real_time_pricing_question.png)
+
+## Unrelated Carro Question Example
+![Unrelated Question Example](utils/images/unrelevant_question.png)
+
+
+## Features
 - PDF FAQ document processing
 - Semantic search using sentence embeddings
 - Integration with Google's Gemini AI
@@ -91,3 +101,6 @@ https://us.cloud.langfuse.com/
 - FAISS
 - PyPDF2 
 - Langfuse
+
+
+

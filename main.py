@@ -4,8 +4,8 @@ from datetime import datetime
 from dataclasses import dataclass
 from google import genai
 from google.genai import types
-from faq_parser import extract_faq_text
-from faq_index import build_faq_index, query_faq_index
+from faq.faq_parser import extract_faq_text
+from faq.faq_index import build_faq_index, query_faq_index
 import os
 import numpy as np
 from typing import Literal, Optional
@@ -14,7 +14,7 @@ import inspect
 import traceback
 
 try:
-    from gemini_function_schema import search_and_scrape_carro_from_api, extract_function_calls, carro_insight_tool
+    from utils.external_search.gemini_function_schema import search_and_scrape_carro_from_api, extract_function_calls, carro_insight_tool
     EXTERNAL_API_AVAILABLE = True
     print("DEBUG: External API functions imported successfully")
 except ImportError as e:
@@ -365,7 +365,7 @@ async def render_ui_async(index, chunk_texts, gemini_client):
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        with st.chat_message("assistant", avatar="carro_logo.png"):
+        with st.chat_message("assistant", avatar="utils/images/carro_logo.png"):
             with st.spinner("Thinking..."):
                 response = await get_answer_from_faq_async(prompt, index, gemini_client, chunk_texts)
             
