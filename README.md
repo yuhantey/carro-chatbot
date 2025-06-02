@@ -90,4 +90,4 @@ https://us.cloud.langfuse.com/
 - Sentence Transformers
 - FAISS
 - PyPDF2 
-- langfuse
+- Langfuse
