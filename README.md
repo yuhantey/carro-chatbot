@@ -75,11 +75,10 @@ cd langfuse
 docker compose up
 ```
 
+3. Done! Open http://localhost:3000 in your browser to access the Langfuse UI 
+
 OR using cloud
-
 https://us.cloud.langfuse.com/
-
-3. Done! Open http://localhost:3000 in your browser to access the Langfuse UI.
 
 4. Generate the Secret key & Public key to pass in test_carro_chatbot_langfuse.py.
 
