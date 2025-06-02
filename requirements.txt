@@ -73,7 +73,6 @@ pypdf2==3.0.1
 python-dateutil==2.9.0.post0
 pytz==2025.2
 pyyaml==6.0.2
-qdrant-client==1.7.0
 referencing==0.36.2
 regex==2024.11.6
 requests==2.32.3
